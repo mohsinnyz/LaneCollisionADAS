@@ -9,3 +9,4 @@ data/
 models/
 checkpoints/
 *.log
+.DS_Store
