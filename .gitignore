@@ -10,3 +10,4 @@ models/
 checkpoints/
 *.log
 .DS_Store
+*.mp4
