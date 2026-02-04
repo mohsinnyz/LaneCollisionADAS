@@ -18,13 +18,15 @@
 *   **🛰️ Bird's Eye View (BEV) Radar**: Projects the road scene into a top-down 2D map, visualizing ego-vehicle position relative to surrounding traffic.
 *   **⚠️ Collision Warning System**: actively monitors headway distance and alerts drivers with color-coded visual warnings (Green → Orange → Red).
 
----
-
 ## 🎥 Demo
 
-*[Insert LinkedIn Demo Video / GIF Here]*
+See the system in action:
+
+[![Watch the Demo](https://img.shields.io/badge/Watch_Demo-LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/mohsinnyz/recent-activity/all/)
+
 
 ---
+
 
 ## 🛠️ System Architecture
 
