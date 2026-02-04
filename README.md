@@ -57,7 +57,7 @@ The pipeline processes each video frame through the following stages:
 
 1.  **Clone the Repository**
     ```bash
-    git clone https://github.com/yourusername/LaneCollisionADAS.git
+    git clone https://github.com/mohsinnyz/LaneCollisionADAS.git
     cd LaneCollisionADAS
     ```
 
