@@ -10,110 +10,115 @@ def main():
     HOMOGRAPHY_PATH = "configs/homography_matrix.npy"
     PPM_PATH = "configs/pixels_per_meter.npy"
     
-    # Risk Thresholds
-    TTC_THRESHOLD_DANGER = 2.5 # Seconds (Alert if collision < 2.5s)
+    # Load Models
+    lane_model = LaneDetector()
+    obj_model = DistanceEstimator(HOMOGRAPHY_PATH, PPM_PATH)
     
-    # --- INITIALIZATION ---
-    print(f"🎬 Opening Video: {VIDEO_PATH}...")
+    # Video Setup
     cap = cv2.VideoCapture(VIDEO_PATH)
-    
-    # Get video FPS for time calculation
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0: fps = 30
-    dt = 1.0 / fps # Time per frame (seconds)
     
-    # Load Models
-    lane_model = LaneDetector() # Phase 2
-    obj_model = DistanceEstimator(HOMOGRAPHY_PATH, PPM_PATH) # Phase 3 (includes Matrix)
+    # Load BEV Calibration
+    H = np.load(HOMOGRAPHY_PATH)
+    ppm = np.load(PPM_PATH)
     
-    # State Variables (Memory)
-    prev_distance = None
-    smoothed_ttc = 99.0 # Start with "Safe"
-    
-    # --- MAIN LOOP ---
+    print("🎬 ADAS System Started. Press 'q' to exit.")
+
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break # End of video
-            
-        # 1. Resize for speed (optional, SegFormer likes 512x512 but we keep aspect)
-        # We'll work on the original frame for accuracy
-        display_frame = frame.copy()
+        if not ret: break
         
-        # 2. RUN LANE DETECTION (Drift)
-        # (Using the detector raw method for speed, visualize manually)
+        display_frame = frame.copy()
+        h, w = frame.shape[:2]
+
+        # ---------------------------------------------------------
+        # 1. LANE DETECTION (With Sky Masking)
+        # ---------------------------------------------------------
         lane_mask = lane_model.detect(frame)
         
-        # Color the road green (Visual only)
+        # Mask out Sky/Trees (Top 40%)
+        sky_limit = int(h * 0.40) 
+        lane_mask[0:sky_limit, :] = 1 
+        
+        # Draw Road (Green) on Main Video
         color_seg = np.zeros_like(frame)
         color_seg[lane_mask == 0] = [0, 255, 0]
-        display_frame = cv2.addWeighted(display_frame, 0.7, color_seg, 0.3, 0)
-        
-        # 3. RUN OBJECT DETECTION (Distance)
-        # We get a list of cars with 'dist_m' calculated
+        display_frame = cv2.addWeighted(display_frame, 0.8, color_seg, 0.2, 0)
+
+        # ---------------------------------------------------------
+        # 2. OBJECT DETECTION & RISK
+        # ---------------------------------------------------------
         cars = obj_model.process_frame(frame)
-        
-        # 4. CALCULATE RISK (Time-to-Collision)
-        # Strategy: Find the CLOSEST car in front of us.
-        min_dist = 999.0
-        target_car = None
+        closest_dist = 999.0
         
         for car in cars:
-            if car['dist_m'] < min_dist:
-                min_dist = car['dist_m']
-                target_car = car
-        
-        # Physics Logic
-        risk_color = (0, 255, 0) # Green (Safe)
-        risk_text = "SAFE"
-        
-        if target_car:
-            current_dist = target_car['dist_m']
+            dist = car['dist_m']
             
-            # Calculate Relative Speed (Distance Change / Time)
-            if prev_distance is not None:
-                # How much closer did it get?
-                delta_dist = prev_distance - current_dist
-                
-                # Speed in meters/second
-                rel_speed = delta_dist / dt 
-                
-                # Only calculate TTC if we are closing in (speed > 0)
-                if rel_speed > 0.1: 
-                    ttc = current_dist / rel_speed
-                    
-                    # Smooth the TTC value so it doesn't flicker
-                    smoothed_ttc = (0.9 * smoothed_ttc) + (0.1 * ttc)
-                else:
-                    smoothed_ttc = 99.0 # Valid but pulling away
+            # Color Logic
+            color = (0, 255, 0) # Green
+            if dist < 30: color = (0, 165, 255) # Orange
+            if dist < 15: color = (0, 0, 255) # Red
             
-            # Update memory
-            prev_distance = current_dist
+            # Draw Box on Main Video
+            x1, y1, x2, y2 = car['bbox']
+            cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(display_frame, f"{dist:.1f}m", (x1, y2+20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
-            # --- ALERT LOGIC ---
-            if smoothed_ttc < TTC_THRESHOLD_DANGER:
-                risk_color = (0, 0, 255) # RED
-                risk_text = f"COLLISION WARNING: {smoothed_ttc:.1f}s"
-            elif smoothed_ttc < 5.0:
-                risk_color = (0, 165, 255) # Orange
-                risk_text = f"Caution: {smoothed_ttc:.1f}s"
-            
-            # Draw Box & Info on the Target Car
-            x1, y1, x2, y2 = target_car['bbox']
-            cv2.rectangle(display_frame, (x1, y1), (x2, y2), risk_color, 3)
-            cv2.putText(display_frame, f"{current_dist:.1f}m", (x1, y2+25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, risk_color, 2)
+            if dist < closest_dist:
+                closest_dist = dist
 
-        # 5. Draw Dashboard
-        # Top Banner
-        cv2.rectangle(display_frame, (0, 0), (frame.shape[1], 60), (0, 0, 0), -1)
-        cv2.putText(display_frame, f"System Status: {risk_text}", (20, 40), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, risk_color, 2)
+        # ---------------------------------------------------------
+        # 3. SEPARATE MINIMAP WINDOW
+        # ---------------------------------------------------------
+        # Make the map larger since it's now its own window
+        map_h, map_w = 600, 400 
+        minimap = np.zeros((map_h, map_w, 3), dtype=np.uint8)
         
-        # Show Video
-        cv2.imshow("ADAS Prototype (MacBook M2)", display_frame)
+        # Draw Grid Lines (Every 10 meters)
+        scale_map = 5.0 # Pixels per meter (Zoom level)
+        for i in range(0, 100, 10):
+            y_pos = int(map_h - 20 - (i * scale_map))
+            if y_pos > 0:
+                cv2.line(minimap, (0, y_pos), (map_w, y_pos), (50, 50, 50), 1)
         
-        # Exit on 'q'
+        # Draw Ego Car (Us) at bottom center
+        cv2.circle(minimap, (map_w//2, map_h-20), 15, (255, 255, 255), -1)
+        cv2.putText(minimap, "EGO", (map_w//2 - 20, map_h-40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        
+        # Draw Other Cars
+        for car in cars:
+            dx_m = car['lat_m']   # Meters left/right
+            dy_m = car['dist_m']  # Meters ahead
+            
+            # Map X: Center + Deviation
+            # Scale lateral movement by 20x to make lane changes obvious
+            map_x = int((map_w // 2) + (dx_m * 20)) 
+            
+            # Map Y: Bottom - Distance
+            map_y = int(map_h - 20 - (dy_m * scale_map))
+            
+            # Draw Red Dot if valid
+            if 0 < map_y < map_h and 0 < map_x < map_w:
+                cv2.circle(minimap, (map_x, map_y), 10, (0, 0, 255), -1)
+                cv2.putText(minimap, f"{dy_m:.1f}m", (map_x+12, map_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+
+        # ---------------------------------------------------------
+        # 4. SHOW WINDOWS
+        # ---------------------------------------------------------
+        status = "SAFE"
+        if closest_dist < 20: status = "WARNING"
+            
+        cv2.putText(display_frame, f"STATUS: {status}", (20, 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        # Show Main Video
+        cv2.imshow("ADAS Camera View", display_frame)
+        
+        # Show Separate Map Window
+        cv2.imshow("BEV Radar Map", minimap)
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
